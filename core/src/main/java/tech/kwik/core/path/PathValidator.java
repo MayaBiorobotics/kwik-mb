@@ -60,6 +60,10 @@ public class PathValidator {
     private final ScheduledExecutorService executor;
     private volatile long highestReceivedPacketNumber;
     private volatile Instant currentAddressLastUsed;
+    // The last validated peer address; sending reverts to this address when validation of a new peer address fails.
+    private volatile InetSocketAddress lastValidatedAddress;
+    // Number of the last datagram counted for the anti-amplification limit, so that coalesced packets are counted once.
+    private volatile int lastCountedDatagramNumber = -1;
     private final boolean peerUsesNonZeroLengthConnectionIDs;
     private OneShotRateLimiter logOncePerAddressRateLimiter;
 
@@ -71,6 +75,7 @@ public class PathValidator {
                          ServerConnectionSocketManager socketManager, Clock clock, ConnectionIdProvider connectionIdProvider, Logger logger) {
         this.version = version;
         currentAddress = clientAddress;
+        lastValidatedAddress = clientAddress;
         this.sender = sender;
         this.connectionIdProvider = connectionIdProvider;
         this.logger = logger;
@@ -85,23 +90,30 @@ public class PathValidator {
         logOncePerAddressRateLimiter = new OneShotRateLimiter(2);
     }
 
-    public void checkSourceAddress(QuicPacket packet, PacketMetaData metaData) {
+    public synchronized void checkSourceAddress(QuicPacket packet, PacketMetaData metaData) {
         highestReceivedPacketNumber = Long.max(highestReceivedPacketNumber, packet.getPacketNumber());
+        // https://www.rfc-editor.org/rfc/rfc9000.html#section-9.3
+        // "Receiving a packet from a new peer address containing a non-probing frame indicates that the peer has migrated to that address."
+        // "An endpoint only changes the address to which it sends packets in response to the highest-numbered non-probing packet."
+        boolean highestNumberedNonProbing = !isProbingPacket(packet) && packet.getPacketNumber() == highestReceivedPacketNumber;
 
         InetSocketAddress packetSourceAddress = metaData.sourceAddress();
 
         if (!packetSourceAddress.equals(currentAddress)) {
 
             if (isValidated(packetSourceAddress)) {
-                // https://www.rfc-editor.org/rfc/rfc9000.html#section-9.3
-                // "Receiving a packet from a new peer address containing a non-probing frame indicates that the peer has migrated to that address."
-                // "An endpoint only changes the address to which it sends packets in response to the highest-numbered non-probing packet."
-                if (!isProbingPacket(packet) && packet.getPacketNumber() == highestReceivedPacketNumber) {
+                if (highestNumberedNonProbing) {
                     logger.info("Receiving non-probing packet on new (validated) path; migrating connection to " + packetSourceAddress);
                     migrateConnection(packetSourceAddress);
                 }
             }
-            else if (! pathValidationInProgress(packetSourceAddress)) {
+            else if (pathValidationInProgress(packetSourceAddress)) {
+                // Validation might have been started by a probing packet, while the peer now actually migrates.
+                if (highestNumberedNonProbing) {
+                    sendToUnvalidatedAddress(packetSourceAddress, metaData);
+                }
+            }
+            else {
                 // https://www.rfc-editor.org/rfc/rfc9000.html#section-9.3
                 // "If the recipient has no unused connection IDs from the peer, it will not be able to send anything on
                 //  the new path until the peer provides one; ..."
@@ -118,11 +130,51 @@ public class PathValidator {
                     // "An endpoint MUST perform path validation (Section 8.2) if it detects any change to a peer's address, "
                     logger.info(String.format("Potential address migration? %s -> %s; starting path validation", currentAddress, packetSourceAddress));
                     startValidation(packet, packetSourceAddress);
+                    if (highestNumberedNonProbing) {
+                        sendToUnvalidatedAddress(packetSourceAddress, metaData);
+                    }
                 }
             }
         }
         else {
             currentAddressLastUsed = clock.instant();
+            if (! isValidated(currentAddress)) {
+                countForAntiAmplificationLimit(metaData);
+            }
+        }
+    }
+
+    private void sendToUnvalidatedAddress(InetSocketAddress newAddress, PacketMetaData metaData) {
+        // https://www.rfc-editor.org/rfc/rfc9000.html#section-9.3
+        // "If the recipient permits the migration, it MUST send subsequent packets to the new peer address and MUST
+        //  initiate path validation (Section 8.2) to verify the peer's ownership of the address if validation is not
+        //  already underway."
+        // "An endpoint MAY send data to an unvalidated peer address, but it MUST protect against potential attacks as
+        //  described in Sections 9.3.1 and 9.3.2."
+        // Waiting for the validation to succeed before sending to the new address can deadlock: when the peer's
+        // congestion window is filled with packets that were lost, it will not send the PATH_RESPONSE until it receives
+        // acknowledgements, which would not arrive as long as they are sent to the old address.
+        logger.info("Receiving non-probing packet on new (not yet validated) path; sending to " + newAddress + " while validating it");
+        InetSocketAddress previousAddress = currentAddress;
+        rememberLastUse(previousAddress);
+        socketManager.changeClientAddress(newAddress);
+        currentAddress = newAddress;
+        currentAddressLastUsed = clock.instant();
+        if (! previousAddress.equals(lastValidatedAddress)) {
+            // The previous address was not validated either, so it is not the one to revert to.
+            connectionIdProvider.addressNoLongerInUse(previousAddress);
+        }
+
+        // https://www.rfc-editor.org/rfc/rfc9000.html#section-9.3.1
+        // "Until a peer's address is deemed valid, an endpoint limits the amount of data it sends to that address"
+        lastCountedDatagramNumber = metaData.datagramNumber();
+        sender.limitSendingToUnvalidatedAddress(metaData.getDatagramSize());
+    }
+
+    private void countForAntiAmplificationLimit(PacketMetaData metaData) {
+        if (metaData.datagramNumber() != lastCountedDatagramNumber) {
+            lastCountedDatagramNumber = metaData.datagramNumber();
+            sender.increaseUnvalidatedAddressLimit(metaData.getDatagramSize());
         }
     }
 
@@ -139,7 +191,7 @@ public class PathValidator {
         purgeOldValidations();
     }
 
-    private void doValidation(PathValidation validation) {
+    private synchronized void doValidation(PathValidation validation) {
         // https://www.rfc-editor.org/rfc/rfc9000.html#section-8.2.1
         // "An endpoint SHOULD NOT probe a new path with packets containing a PATH_CHALLENGE frame more frequently
         //  than it would send an Initial packet. "
@@ -151,6 +203,9 @@ public class PathValidator {
         if (clock.instant().isAfter(validation.startedAt().plusMillis((long) (3 * initialPto * 1.05f)))) {
             logger.info("Path validation failed for " + validation.getAddressToValidate() + " after " + validation.getChallengeRepeatCount() + " attempts and timeout of " + (3 * initialPto) + "ms");
             remove(validation);
+            if (validation.getAddressToValidate().equals(currentAddress)) {
+                revertToLastValidatedAddress();
+            }
         }
         else {
             byte[] challenge = generateChallenge();
@@ -188,17 +243,45 @@ public class PathValidator {
     private void migrateConnection(InetSocketAddress newAddress) {
         InetSocketAddress previousAddress = currentAddress;
         socketManager.changeClientAddress(newAddress);
-
-        PathValidation validation = pathValidationsByAddress.get(previousAddress);
-        if (validation != null) {
-            validation.setAddressLastUsed(currentAddressLastUsed);
-        }
+        rememberLastUse(previousAddress);
 
         currentAddress = newAddress;
         currentAddressLastUsed = null;
+        lastValidatedAddress = newAddress;
+        // The new address is validated, so sending to it must not be limited.
+        sender.unsetAntiAmplificationLimit();
 
         // let connection id manager know that the previous address is no longer in use, so it can retire the connection id associated with it
         connectionIdProvider.addressNoLongerInUse(previousAddress);
+    }
+
+    private void completeMigration(InetSocketAddress validatedAddress) {
+        InetSocketAddress previousValidatedAddress = lastValidatedAddress;
+        lastValidatedAddress = validatedAddress;
+        sender.unsetAntiAmplificationLimit();
+        if (! validatedAddress.equals(previousValidatedAddress)) {
+            connectionIdProvider.addressNoLongerInUse(previousValidatedAddress);
+        }
+    }
+
+    private void revertToLastValidatedAddress() {
+        // https://www.rfc-editor.org/rfc/rfc9000.html#section-9.3.2
+        // "To protect the connection from failing due to such a spurious migration, an endpoint MUST revert to using
+        //  the last validated peer address when validation of a new peer address fails."
+        InetSocketAddress failedAddress = currentAddress;
+        logger.info("Reverting to last validated address " + lastValidatedAddress + " after failed validation of " + failedAddress);
+        socketManager.changeClientAddress(lastValidatedAddress);
+        currentAddress = lastValidatedAddress;
+        currentAddressLastUsed = null;
+        sender.unsetAntiAmplificationLimit();
+        connectionIdProvider.addressNoLongerInUse(failedAddress);
+    }
+
+    private void rememberLastUse(InetSocketAddress address) {
+        PathValidation validation = pathValidationsByAddress.get(address);
+        if (validation != null) {
+            validation.setAddressLastUsed(currentAddressLastUsed);
+        }
     }
 
     private byte[] generateChallenge() {
@@ -230,7 +313,7 @@ public class PathValidator {
                 frame instanceof Padding;
     }
 
-    public void checkPathResponse(PathResponseFrame pathResponseFrame, PacketMetaData metaData) {
+    public synchronized void checkPathResponse(PathResponseFrame pathResponseFrame, PacketMetaData metaData) {
         // https://www.rfc-editor.org/rfc/rfc9000.html#section-8.2.3
         // "Path validation succeeds when a PATH_RESPONSE frame is received that contains the data that was sent in a
         //  previous PATH_CHALLENGE frame. A PATH_RESPONSE frame received on any network path validates the path on
@@ -241,9 +324,11 @@ public class PathValidator {
             pathValidation.setValidated();
             InetSocketAddress validatedAddress = pathValidation.getAddressToValidate();
             logger.info("Path validated: " + validatedAddress);
-            if (! pathValidation.isStartedByProbingPacket()) {
-                logger.info("Immediately migrating connection to validated address: " + validatedAddress);
-                migrateConnection(validatedAddress);
+            if (validatedAddress.equals(currentAddress)) {
+                // Already sending to this address since the non-probing packet that triggered the validation; now that
+                // it is validated, sending is no longer limited and the previous address is no longer needed.
+                logger.info("Migration to validated address completed: " + validatedAddress);
+                completeMigration(validatedAddress);
             }
         }
         else {

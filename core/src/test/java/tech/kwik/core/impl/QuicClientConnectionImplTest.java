@@ -42,6 +42,7 @@ import tech.kwik.core.packet.*;
 import tech.kwik.core.send.SenderImpl;
 import tech.kwik.core.stream.StreamManager;
 import tech.kwik.core.test.ByteUtils;
+import tech.kwik.core.socket.ClientSocketManager;
 import tech.kwik.core.test.FieldReader;
 import tech.kwik.core.test.FieldSetter;
 import tech.kwik.core.test.TestClock;
@@ -108,6 +109,24 @@ class QuicClientConnectionImplTest {
         originalDestinationConnectionId = connectionIdManager.getOriginalDestinationConnectionId();
         testScheduledExecutor = new TestScheduledExecutor(new TestClock());
         FieldSetter.setField(connection, QuicConnectionImpl.class, "callbackThread", testScheduledExecutor);
+    }
+    //endregion
+
+    //region path validation
+    @Test
+    void pathResponseShouldBeSentAsPathProbeThatIsNotLimitedByCongestionWindow() throws Exception {
+        // Given
+        byte[] challengeData = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
+        ClientSocketManager socketManager = (ClientSocketManager) new FieldReader(connection, connection.getClass().getDeclaredField("socketManager")).read();
+
+        // When
+        connection.process(new PathChallengeFrame(Version.getDefault(), challengeData), mock(QuicPacket.class), mock(PacketMetaData.class));
+
+        // Then
+        verify(sender).sendAlternateAddress(
+                argThat(frame -> frame instanceof PathResponseFrame && Arrays.equals(((PathResponseFrame) frame).getData(), challengeData)),
+                argThat(address -> address.equals(socketManager.getClientAddress())));
+        verify(sender, never()).send(any(QuicFrame.class), any(EncryptionLevel.class), any());
     }
     //endregion
 

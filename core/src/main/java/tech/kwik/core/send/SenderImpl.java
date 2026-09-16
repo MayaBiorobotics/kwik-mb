@@ -112,7 +112,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
     private volatile long packetsSent;
     private AtomicInteger subsequentZeroDelays = new AtomicInteger();
     private volatile boolean lastDelayWasZero = false;
-    private volatile int antiAmplificationLimit = -1;
+    private volatile long antiAmplificationLimit = -1;
     private volatile Runnable shutdownHook;
     private volatile Instant lastestAckElicitingTime;
     private final byte[] paddingPattern;
@@ -483,7 +483,7 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
                     // packets will be sent at all, because initial packets have a minimum size of 1200 bytes.
                     log.warn(String.format("Sending data may be limited by remaining anti-amplification limit of %d bytes", antiAmplificationLimit - bytesSent));
                 }
-                currentMaxPacketSize = Integer.min(currentMaxPacketSize, (int) (antiAmplificationLimit - bytesSent));
+                currentMaxPacketSize = (int) Long.min(currentMaxPacketSize, antiAmplificationLimit - bytesSent);
             }
             else {
                 log.warn("Cannot send; anti-amplification limit is reached");
@@ -551,6 +551,33 @@ public class SenderImpl implements Sender, CongestionControlEventListener {
 
     public void unsetAntiAmplificationLimit() {
         antiAmplificationLimit = -1;
+    }
+
+    /**
+     * Limits sending to a peer address that is not (yet) validated.
+     * https://www.rfc-editor.org/rfc/rfc9000.html#section-9.3.1
+     * "Until a peer's address is deemed valid, an endpoint limits the amount of data it sends to that address; see Section 8."
+     * https://www.rfc-editor.org/rfc/rfc9000.html#section-8
+     * "... an endpoint MUST limit the amount of data it sends to the unvalidated address to three times the amount of
+     *  data received from that address."
+     * As the limit is compared with the total number of bytes sent on the connection, it is offset by the bytes sent so far.
+     * @param bytesReceived  the number of bytes received from the unvalidated address
+     */
+    public void limitSendingToUnvalidatedAddress(int bytesReceived) {
+        antiAmplificationLimit = bytesSent + 3L * bytesReceived;
+        wakeUpSenderLoop();
+    }
+
+    /**
+     * Raises the limit set by {@link #limitSendingToUnvalidatedAddress(int)} when more data is received from the
+     * unvalidated address.
+     * @param bytesReceived  the number of additional bytes received from the unvalidated address
+     */
+    public void increaseUnvalidatedAddressLimit(int bytesReceived) {
+        if (antiAmplificationLimit >= 0) {
+            antiAmplificationLimit += 3L * bytesReceived;
+            wakeUpSenderLoop();
+        }
     }
 
     public void enableAllLevels() {

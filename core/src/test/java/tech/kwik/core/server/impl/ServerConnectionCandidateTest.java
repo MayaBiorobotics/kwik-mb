@@ -101,8 +101,8 @@ class ServerConnectionCandidateTest {
 
         // Then
         assertThat(createdServerConnection).isNotNull();
-        Integer antiAmplificationLimit = (Integer) new FieldReader(createdServerConnection.getSender(), SenderImpl.class.getDeclaredField("antiAmplificationLimit")).read();
-        assertThat(antiAmplificationLimit).isEqualTo(3 * 1200);
+        Long antiAmplificationLimit = (Long) new FieldReader(createdServerConnection.getSender(), SenderImpl.class.getDeclaredField("antiAmplificationLimit")).read();
+        assertThat(antiAmplificationLimit).isEqualTo(3 * 1200L);
     }
 
     @Test
@@ -120,8 +120,8 @@ class ServerConnectionCandidateTest {
         testExecutor.check();
 
         // Then
-        Integer antiAmplificationLimit = (Integer) new FieldReader(createdServerConnection.getSender(), SenderImpl.class.getDeclaredField("antiAmplificationLimit")).read();
-        assertThat(antiAmplificationLimit).isGreaterThan(3 * 2 * 1200);
+        Long antiAmplificationLimit = (Long) new FieldReader(createdServerConnection.getSender(), SenderImpl.class.getDeclaredField("antiAmplificationLimit")).read();
+        assertThat(antiAmplificationLimit).isGreaterThan(3 * 2 * 1200L);
     }
 
     @Test
@@ -205,8 +205,8 @@ class ServerConnectionCandidateTest {
 
         // Then
         assertThat(createdServerConnection).isNotNull();
-        Integer antiAmplificationLimit = (Integer) new FieldReader(createdServerConnection.getSender(), SenderImpl.class.getDeclaredField("antiAmplificationLimit")).read();
-        assertThat(antiAmplificationLimit).isEqualTo(3 * 1200);
+        Long antiAmplificationLimit = (Long) new FieldReader(createdServerConnection.getSender(), SenderImpl.class.getDeclaredField("antiAmplificationLimit")).read();
+        assertThat(antiAmplificationLimit).isEqualTo(3 * 1200L);
     }
 
     @Test

@@ -807,6 +807,24 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
     }
 
     @Override
+    public void process(PathChallengeFrame pathChallengeFrame, QuicPacket packet, PacketMetaData metaData) {
+        PathResponseFrame response = new PathResponseFrame(quicVersion.getVersion(), pathChallengeFrame.getData());
+        // https://www.rfc-editor.org/rfc/rfc9000.html#section-8.2.2
+        // "An endpoint MUST NOT delay transmission of a packet containing a PATH_RESPONSE frame unless constrained by
+        //  congestion control."
+        // https://www.rfc-editor.org/rfc/rfc9000.html#section-9.4
+        // "A sender can make exceptions for probe packets so that their loss detection is independent and does not
+        //  unduly cause the congestion controller to reduce its sending rate."
+        // A client does not notice a NAT rebinding. When its congestion window is filled with packets that were lost
+        // during the rebinding, a congestion controlled response would wait for acknowledgements the server might not
+        // send to the new address before the path is validated, so path validation could never succeed. Therefore, the
+        // response is sent as a path probe (not limited by the congestion window) over the current path.
+        // https://www.rfc-editor.org/rfc/rfc9000.html#section-13.3
+        // "Responses to path validation using PATH_RESPONSE frames are sent just once."
+        sender.sendAlternateAddress(response, socketManager.getClientAddress());
+    }
+
+    @Override
     public void process(RetireConnectionIdFrame retireConnectionIdFrame, QuicPacket packet, PacketMetaData metaData) {
         connectionIdManager.process(retireConnectionIdFrame, packet.getDestinationConnectionId());
     }

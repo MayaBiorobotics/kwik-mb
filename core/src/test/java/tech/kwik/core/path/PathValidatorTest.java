@@ -449,7 +449,7 @@ class PathValidatorTest {
     }
 
     @Test
-    void whenClientMigratesBackToPreviousAddressAfterLongTimeServerShouldNotMigrateWithoutRevalidation() {
+    void whenClientMigratesBackToPreviousAddressAfterLongTimeServerShouldRevalidateAndLimitSending() {
         // Given
         InetSocketAddress newAddress = new InetSocketAddress("localhost", 59643);
         PacketMetaData packetMetaData = metaDataFor(1200, newAddress);
@@ -468,7 +468,12 @@ class PathValidatorTest {
         pathValidator.checkSourceAddress(normalPacket(), metaDataFor(684, defaultClientAddress));
 
         // Then
-        verify(socketManager, never()).changeClientAddress(any(InetSocketAddress.class));
+        // https://www.rfc-editor.org/rfc/rfc9000.html#section-9.3: the server must send to the address the client migrated
+        // to, but as that address is no longer considered validated, it must be validated again and sending must be limited.
+        assertThat(pathValidator.isValidated(defaultClientAddress)).isFalse();
+        verify(socketManager).changeClientAddress(argThat(address -> address.equals(defaultClientAddress)));
+        verify(sender).limitSendingToUnvalidatedAddress(684);
+        verify(sender).sendAlternateAddress(any(PathChallengeFrame.class), argThat(address -> address.equals(defaultClientAddress)));
     }
 
     @Test
@@ -522,7 +527,111 @@ class PathValidatorTest {
         pathValidator.checkSourceAddress(normalPacket(), metaDataFor(684, defaultClientAddress));
 
         // Then
+        // The validation of the original address has been purged, so it is not considered validated anymore: sending to
+        // it is limited until it is validated again.
+        assertThat(pathValidator.isValidated(defaultClientAddress)).isFalse();
+        verify(sender).limitSendingToUnvalidatedAddress(684);
+    }
+    //endregion
+
+    //region sending to address that is not yet validated
+    @Test
+    void whenNonProbingPacketIsReceivedFromNewAddressServerShouldSendToThatAddressBeforeItIsValidated() {
+        // Given
+        InetSocketAddress newAddress = new InetSocketAddress("localhost", 59643);
+
+        // When
+        pathValidator.checkSourceAddress(normalPacket(), metaDataFor(1200, newAddress));
+
+        // Then
+        assertThat(pathValidator.isValidated(newAddress)).isFalse();
+        verify(socketManager).changeClientAddress(argThat(address -> address.equals(newAddress)));
+    }
+
+    @Test
+    void whenProbingPacketIsReceivedFromNewAddressServerShouldNotSendToThatAddress() {
+        // Given
+        InetSocketAddress newAddress = new InetSocketAddress("localhost", 59643);
+
+        // When
+        pathValidator.checkSourceAddress(probingPacket(68), metaDataFor(1200, newAddress));
+
+        // Then
         verify(socketManager, never()).changeClientAddress(any(InetSocketAddress.class));
+        verify(sender, never()).limitSendingToUnvalidatedAddress(anyInt());
+    }
+
+    @Test
+    void whenSendingToUnvalidatedAddressSendingShouldBeLimitedByDataReceivedFromThatAddress() {
+        // Given
+        InetSocketAddress newAddress = new InetSocketAddress("localhost", 59643);
+
+        // When
+        pathValidator.checkSourceAddress(normalPacket(), metaDataFor(1200, newAddress));
+
+        // Then
+        verify(sender).limitSendingToUnvalidatedAddress(1200);
+    }
+
+    @Test
+    void whenMoreDataIsReceivedFromUnvalidatedAddressLimitShouldBeIncreasedOncePerDatagram() {
+        // Given
+        InetSocketAddress newAddress = new InetSocketAddress("localhost", 59643);
+        pathValidator.checkSourceAddress(normalPacket(68), metaDataFor(1200, newAddress, 1));
+
+        // When
+        pathValidator.checkSourceAddress(normalPacket(69), metaDataFor(900, newAddress, 2));
+        pathValidator.checkSourceAddress(normalPacket(70), metaDataFor(900, newAddress, 2));
+
+        // Then
+        verify(sender, times(1)).increaseUnvalidatedAddressLimit(900);
+    }
+
+    @Test
+    void whenAddressThatIsSentToIsValidatedSendingLimitShouldBeLifted() {
+        // Given
+        InetSocketAddress newAddress = new InetSocketAddress("localhost", 59643);
+        pathValidator.checkSourceAddress(normalPacket(), metaDataFor(1200, newAddress));
+        PathChallengeFrame pathChallengeFrame = capturePathChallengeFrame();
+
+        // When
+        pathValidator.checkPathResponse(new PathResponseFrame(Version.getDefault(), pathChallengeFrame.getData()), metaDataFor(1200, newAddress));
+
+        // Then
+        verify(sender).unsetAntiAmplificationLimit();
+        verify(socketManager, times(1)).changeClientAddress(any(InetSocketAddress.class));
+        verify(connectionIdProvider).addressNoLongerInUse(argThat(address -> address.equals(defaultClientAddress)));
+    }
+
+    @Test
+    void whenValidationOfAddressThatIsSentToFailsServerShouldRevertToLastValidatedAddress() {
+        // Given
+        InetSocketAddress newAddress = new InetSocketAddress("localhost", 59643);
+        pathValidator.checkSourceAddress(normalPacket(), metaDataFor(1200, newAddress));
+        clearInvocations(socketManager, sender);
+
+        // When
+        testClock.fastForward(100 * 1000);
+
+        // Then
+        verify(socketManager).changeClientAddress(argThat(address -> address.equals(defaultClientAddress)));
+        verify(sender).unsetAntiAmplificationLimit();
+        verify(connectionIdProvider).addressNoLongerInUse(argThat(address -> address.equals(newAddress)));
+    }
+
+    @Test
+    void whenPeerReturnsToValidatedAddressWhileNewAddressIsValidatedServerShouldSendToValidatedAddressWithoutLimit() {
+        // Given
+        InetSocketAddress newAddress = new InetSocketAddress("localhost", 59643);
+        pathValidator.checkSourceAddress(normalPacket(68), metaDataFor(1200, newAddress));
+        clearInvocations(socketManager, sender);
+
+        // When
+        pathValidator.checkSourceAddress(normalPacket(69), metaDataFor(1200, defaultClientAddress));
+
+        // Then
+        verify(socketManager).changeClientAddress(argThat(address -> address.equals(defaultClientAddress)));
+        verify(sender).unsetAntiAmplificationLimit();
     }
     //endregion
 
@@ -564,6 +673,10 @@ class PathValidatorTest {
     //region helper methods
     private PacketMetaData metaDataFor(int packetSize, InetSocketAddress sourceAddress) {
         return new PacketMetaData(Instant.now(), sourceAddress, 0, packetSize);
+    }
+
+    private PacketMetaData metaDataFor(int packetSize, InetSocketAddress sourceAddress, int datagramNumber) {
+        return new PacketMetaData(Instant.now(), sourceAddress, datagramNumber, packetSize);
     }
 
     private PathChallengeFrame capturePathChallengeFrame() {

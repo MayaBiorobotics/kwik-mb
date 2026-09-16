@@ -14,29 +14,9 @@ plugins {
 
 group = 'tech.kwik'
 
-// Derive the project version from git at configuration time, so that every task
-// (the jar, and the sources/javadoc jars and publications created by the
-// vanniktech plugin) consistently sees the same version. A clean tag like
-// 'v1.0.19' becomes '1.0.19'; any other 'git describe' output (development
-// builds) is used verbatim.
-version = {
-    def proc = "git describe --always --dirty".execute()
-    proc.waitFor()
-    if (proc.exitValue() != 0) {
-        logger.quiet("Building development version.")
-        return 'unspecified'
-    }
-    def versionTag = proc.in.readLines()[0]
-    if (versionTag ==~ /v?[0-9]+(\.\d+){1,2}/) {
-        if (versionTag.startsWith("v")) {
-            versionTag = versionTag[1..-1]
-        }
-        logger.quiet("Building version ${versionTag}.")
-    } else {
-        logger.error("Version tag '${versionTag}' does not contain a valid version.")
-    }
-    return versionTag
-}()
+// Fork release version: upstream kwik version + "-mb.N". Increase N before every upload to Nexus
+// (upstream derives the version from git tags instead).
+version = '0.11-mb.1'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_11
@@ -99,12 +79,15 @@ mavenPublishing {
     // './gradlew javadoc'.
     configure(new JavaLibrary(new JavadocJar.Empty(), true))
 
-    // Uploads to Maven Central (Central Portal). Credentials are read from the
-    // 'mavenCentralUsername' / 'mavenCentralPassword' Gradle properties.
-    publishToMavenCentral()
+    // The fork is not uploaded to Maven Central (upstream calls publishToMavenCentral() here), so the
+    // 'publish' task only uploads to the company Nexus configured below.
 
     // GPG-signs all publications, using the standard signing.* Gradle properties.
-    signAllPublications()
+    // Signing is only needed for Maven Central; without a key the fork is still installable in the
+    // local Maven repository and publishable to the company Nexus.
+    if (project.hasProperty('signingInMemoryKey') || project.hasProperty('signing.keyId')) {
+        signAllPublications()
+    }
 
     // The artifactId defaults to the (sub)project name, the group and version to
     // the project's group and version. Modules override name/description below.
@@ -132,6 +115,19 @@ mavenPublishing {
             connection = 'scm:git:git@github.com:ptrd/kwik.git'
             developerConnection = 'scm:git:git@github.com:ptrd/kwik.git'
             url = 'https://github.com/ptrd/kwik'
+        }
+    }
+}
+
+publishing {
+    repositories {
+        // Company Nexus (the same hosted repository as 'maya-maven' in ~/.m2/settings.xml).
+        // Credentials are read from the 'mayaNexusUsername' / 'mayaNexusPassword' Gradle properties.
+        maven {
+            name = 'mayaNexus'
+            url = uri(project.findProperty('mayaNexusUrl') ?: 'http://89.17.32.7:60002/repository/maya-maven/')
+            allowInsecureProtocol = true
+            credentials(PasswordCredentials)
         }
     }
 }

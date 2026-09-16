@@ -749,6 +749,24 @@ class PacketAssemblerTest extends AbstractSenderTest {
         assertThat(item.get().getPacket().getFrames()).hasOnlyElementsOfType(PathChallengeFrame.class);
         assertThat(item.get().getClientAddress()).isEqualTo(alternateAddress);
     }
+
+    @Test
+    void pathResponseSentAsPathProbeOnCurrentAddressShouldBeSentEvenWhenCwndIsExhausted() {
+        // Given
+        PathResponseFrame pathResponse = new PathResponseFrame(Version.getDefault(), new byte[8]);
+        sendRequestQueue.addRequest(new StreamFrame(0, new byte[1000], false), f -> {});
+        sendRequestQueue.addAlternateAddressRequest(pathResponse, defaultClientAddress);
+
+        // When
+        // Congestion window is exhausted, as happens after a NAT rebinding when the packets in flight were lost; the
+        // queued stream data must wait, but the path response must not.
+        Optional<SendItem> item = oneRttPacketAssembler.assemble(0, 1200, defaultClientAddress);
+
+        // Then
+        assertThat(item).isPresent();
+        assertThat(item.get().getPacket().getFrames()).hasOnlyElementsOfType(PathResponseFrame.class);
+        assertThat(item.get().getClientAddress()).isEqualTo(defaultClientAddress);
+    }
     //endregion
 
     //region datagram extension
