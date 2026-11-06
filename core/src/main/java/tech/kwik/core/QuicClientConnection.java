@@ -138,6 +138,8 @@ public interface QuicClientConnection extends QuicConnection {
         Builder cipherSuite(TlsConstants.CipherSuite cipherSuite);
 
         Builder noServerCertificateCheck();
+        /** Проверку сертификата оставляет trust manager; отключает только сверку DNS-имени. */
+        Builder noServerHostnameVerification();
 
         /**
          * Sets the custom trust store that will be used to validate the server's certificate.

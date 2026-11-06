@@ -95,6 +95,16 @@ public class QuicStreamImpl implements QuicStream {
     }
 
     @Override
+    public void setReadTimeout(long milliseconds) {
+        if (milliseconds < 0) {
+            throw new IllegalArgumentException("Negative read timeout");
+        }
+        if (inputStream instanceof StreamInputStreamImpl) {
+            ((StreamInputStreamImpl) inputStream).setReadTimeout(milliseconds);
+        }
+    }
+
+    @Override
     public InputStream getInputStream() {
         return inputStream;
     }

@@ -397,11 +397,11 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
             boolean handshakeFinished = handshakeFinishedCondition.await(connectTimeout, TimeUnit.MILLISECONDS);
             if (!handshakeFinished) {
                 abortHandshake();
-                throw new ConnectException("Connection timed out after " + connectTimeout + " ms");
+                throw new java.net.SocketTimeoutException("Connection timed out after " + connectTimeout + " ms");
             }
             else if (connectionState != Status.Connected) {
                 abortHandshake();
-                throw new ConnectException("Handshake error: " + (handshakeError != null? handshakeError: ""));
+                throw new javax.net.ssl.SSLHandshakeException("Handshake error: " + (handshakeError != null? handshakeError: ""));
             }
         }
         catch (InterruptedException e) {
@@ -1414,6 +1414,7 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         private Integer connectionIdLength;
         private List<TlsConstants.CipherSuite> cipherSuites = new ArrayList<>();
         private boolean omitCertificateCheck;
+        private boolean omitHostnameVerification;
         private Integer quantumReadinessTest;
         private X509Certificate clientCertificate;
         private PrivateKey clientCertificateKey;
@@ -1453,6 +1454,10 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
 
             if (omitCertificateCheck) {
                 quicConnection.trustAnyServerCertificate();
+            }
+
+            if (omitHostnameVerification) {
+                quicConnection.tlsEngine.setHostnameVerifier((hostname, certificate) -> true);
             }
 
             if (customTrustManager != null) {
@@ -1675,6 +1680,12 @@ public class QuicClientConnectionImpl extends QuicConnectionImpl implements Quic
         @Override
         public Builder noServerCertificateCheck() {
             omitCertificateCheck = true;
+            return this;
+        }
+
+        @Override
+        public Builder noServerHostnameVerification() {
+            omitHostnameVerification = true;
             return this;
         }
 

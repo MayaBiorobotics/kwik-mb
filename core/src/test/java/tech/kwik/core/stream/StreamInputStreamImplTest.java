@@ -49,6 +49,14 @@ class StreamInputStreamImplTest {
     }
 
     @Test
+    void perStreamReadTimeoutDoesNotChangeGlobalDefault() {
+        long defaultTimeout = StreamInputStreamImpl.waitForNextFrameTimeout;
+        streamInputStream.setReadTimeout(20);
+        assertThatThrownBy(() -> streamInputStream.read()).isInstanceOf(java.net.SocketTimeoutException.class);
+        assertThat(StreamInputStreamImpl.waitForNextFrameTimeout).isEqualTo(defaultTimeout);
+    }
+
+    @Test
     void whenFirstStreamFrameAddIncrEqualsUpToOffset() throws Exception {
         // When
         long incr = streamInputStream.addDataFrom(new StreamFrame(0, 0, new byte[876], false));

@@ -1,0 +1,9 @@
+plugins {
+    id 'buildlogic.java-common-conventions'
+}
+
+version = '3.3-mb.1'
+
+dependencies {
+    implementation 'at.favre.lib:hkdf:2.0.0'
+}

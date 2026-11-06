@@ -45,6 +45,13 @@ class StreamInputStreamImpl extends StreamInputStream {
 
     protected static final float receiverMaxDataIncrementFactor = 0.10f;
 
+    // Значение принадлежит потоку: изменение не затрагивает другие соединения.
+    private volatile Long readTimeout;
+
+    void setReadTimeout(long milliseconds) {
+        readTimeout = milliseconds == 0 ? Long.MAX_VALUE : milliseconds;
+    }
+
     private final QuicStreamImpl quicStream;
     private final Logger log;
     private volatile boolean closed;
@@ -161,7 +168,8 @@ class StreamInputStreamImpl extends StreamInputStream {
             return 0;
         }
         Instant readAttemptStarted = Instant.now();
-        long waitPeriod = waitForNextFrameTimeout;
+        long timeout = readTimeout == null ? waitForNextFrameTimeout : readTimeout;
+        long waitPeriod = timeout;
         while (true) {
             try {
                 blockingReaderThread = Thread.currentThread();
@@ -198,11 +206,11 @@ class StreamInputStreamImpl extends StreamInputStream {
 
                 if (receiveBuffer.bytesAvailable() == 0) {
                     long waited = Duration.between(readAttemptStarted, Instant.now()).toMillis();
-                    if (waited > waitForNextFrameTimeout) {
+                    if (waited >= timeout) {
                         throw new SocketTimeoutException("Read timeout on stream " + quicStream.streamId + "; read up to " + receiveBuffer.readOffset());
                     }
                     else {
-                        waitPeriod = Long.max(1, waitForNextFrameTimeout - waited);
+                        waitPeriod = Long.max(1, timeout - waited);
                     }
                 }
             }

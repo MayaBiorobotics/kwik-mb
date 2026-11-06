@@ -16,7 +16,7 @@ group = 'tech.kwik'
 
 // Fork release version: upstream kwik version + "-mb.N". Increase N before every upload to Nexus
 // (upstream derives the version from git tags instead).
-version = '0.11-mb.1'
+version = '0.11-mb.2'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_11
@@ -32,7 +32,7 @@ repositories {
     mavenCentral()
 }
 
-ext.agent15_version = '3.3'
+ext.agent15_version = '3.3-mb.1'
 ext.mockito_version = '5.23.0'
 
 // Resolvable configuration holding just the mockito-core jar, so it can be passed to the test JVM as a Java agent

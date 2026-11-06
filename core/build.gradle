@@ -3,7 +3,7 @@ plugins {
 }
 
 dependencies {
-    implementation "tech.kwik:agent15:$agent15_version"
+    implementation project(':agent15')
 
     // https://mvnrepository.com/artifact/at.favre.lib/hkdf
     implementation 'at.favre.lib:hkdf:2.0.0'

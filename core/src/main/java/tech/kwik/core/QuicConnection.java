@@ -141,4 +141,9 @@ public interface QuicConnection extends DatagramExtension {
     void close(long applicationErrorCode, String errorReason);
 
     Statistics getStats();
+
+    /** Привязка прикладной подписи к завершённому QUIC/TLS-сеансу, RFC 8446 §7.5. */
+    default byte[] exportKeyingMaterial(String label, byte[] context, int length) {
+        throw new UnsupportedOperationException("TLS exporter is not supported");
+    }
 }

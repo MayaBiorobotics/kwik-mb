@@ -1003,6 +1003,14 @@ public abstract class QuicConnectionImpl implements QuicConnection, PacketProces
     
     protected abstract SenderImpl getSender();
 
+    @Override
+    public byte[] exportKeyingMaterial(String label, byte[] context, int length) {
+        if (connectionState != Status.Connected) {
+            throw new IllegalStateException("QUIC connection is not established");
+        }
+        return getTlsEngine().exportKeyingMaterial(label, context, length);
+    }
+
     protected abstract TlsEngine getTlsEngine();
 
     protected abstract GlobalAckGenerator getAckGenerator();

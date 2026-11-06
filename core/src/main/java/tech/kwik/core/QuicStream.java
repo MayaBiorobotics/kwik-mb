@@ -38,6 +38,11 @@ public interface QuicStream {
      */
     InputStream getInputStream();
 
+    /** Таймаут ожидания данных только этого потока; ноль отключает ограничение. */
+    default void setReadTimeout(long milliseconds) {
+        throw new UnsupportedOperationException();
+    }
+
     /**
      * Returns the output stream for sending data to the peer.
      *
